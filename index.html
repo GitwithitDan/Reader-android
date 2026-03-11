@@ -296,9 +296,12 @@ function captureFrame() {
   var flash=document.getElementById('flash');
   flash.classList.add('on'); setTimeout(function(){flash.classList.remove('on');},80);
   var canvas=document.createElement('canvas');
-  canvas.width=video.videoWidth||1280; canvas.height=video.videoHeight||720;
-  canvas.getContext('2d').drawImage(video,0,0);
-  var b64=canvas.toDataURL('image/jpeg',0.95).split(',')[1];
+  var maxW=1920; var maxH=1080;
+  var vw=video.videoWidth||1280; var vh=video.videoHeight||720;
+  var scale=Math.min(1, maxW/vw, maxH/vh);
+  canvas.width=Math.round(vw*scale); canvas.height=Math.round(vh*scale);
+  canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
+  var b64=canvas.toDataURL('image/jpeg',0.82).split(',')[1];
   isProcessing=true; showProc('Reading your document...'); setMode('Reading...');
   var pageNum=pages.length+1;
   ocrWithClaude(b64,pageNum)
@@ -309,7 +312,7 @@ function captureFrame() {
       else           { buildContext(); setMode('Ask me anything'); speak(r.overview); }
       isProcessing=false;
     })
-    .catch(function() { hideProc(); speak('I had trouble reading that. Please try again.'); setMode('Try again'); isProcessing=false; });
+    .catch(function(err) { hideProc(); speak('I had trouble reading that. Please try again.'); setMode('Error: '+(err&&err.message||'unknown')); isProcessing=false; });
 }
 
 // OCR
@@ -333,7 +336,12 @@ function ocrWithClaude(b64, pageNum) {
       ]}]
     })
   })
-  .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+  .then(function(r){
+    return r.json().then(function(d){
+      if(!r.ok) throw new Error('HTTP '+r.status+': '+(d&&d.error&&d.error.message||JSON.stringify(d)));
+      return d;
+    });
+  })
   .then(function(data){
     var raw=(data.content&&data.content[0])?data.content[0].text:'';
     try {
