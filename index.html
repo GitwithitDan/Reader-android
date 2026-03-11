@@ -32,18 +32,9 @@ html, body {
   position: fixed; top: 0; left: 0; right: 0;
   padding: env(safe-area-inset-top, 28px) 20px 14px;
   background: linear-gradient(to bottom, rgba(0,0,0,0.75), transparent);
-  z-index: 20; display: none; align-items: center; justify-content: space-between;
+  z-index: 20; display: none; align-items: center; justify-content: center;
 }
 #app-title { font-size: 22px; font-weight: normal; }
-#mic-status { display: flex; align-items: center; gap: 8px; }
-#mic-dot {
-  width: 10px; height: 10px; border-radius: 50%; background: #555;
-  transition: background 0.3s, box-shadow 0.3s;
-}
-#mic-dot.on  { background: #4aaf72; box-shadow: 0 0 8px #4aaf72; animation: mpulse 2s infinite; }
-#mic-dot.off { background: #d94040; }
-@keyframes mpulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
-#mic-label { color: rgba(240,230,208,0.45); font-size: 11px; font-family: -apple-system, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }
 #bubble {
   position: fixed;
   bottom: calc(env(safe-area-inset-bottom, 16px) + 160px);
@@ -82,7 +73,6 @@ html, body {
 }
 .btn-primary svg { width: 26px; height: 26px; }
 .btn-primary:active { background: #a3601a; }
-#btn-speak.on { background: rgba(74,175,114,0.25); border-color: #4aaf72; color: #4aaf72; }
 #flash { position: fixed; top:0;left:0;right:0;bottom:0; background:#fff; z-index:100; opacity:0; pointer-events:none; transition:opacity 0.06s; }
 #flash.on { opacity:1; }
 #processing { position:fixed;top:0;left:0;right:0;bottom:0; background:rgba(10,8,5,0.9); z-index:80; display:none; flex-direction:column; align-items:center; justify-content:center; gap:24px; }
@@ -115,7 +105,7 @@ html, body {
 
 <div id="splash">
   <h1>Reader</h1>
-  <p>Point your camera at any document and tap Read. Then ask questions by voice or tap the mic button.</p>
+  <p>Point your camera at any document and tap Read. Then ask questions by voice.</p>
   <button id="splash-btn">Open Reader</button>
   <p style="font-size:12px;font-family:-apple-system,sans-serif;color:rgba(240,230,208,0.22);text-align:center;">Requires camera and microphone</p>
 </div>
@@ -126,10 +116,6 @@ html, body {
 
 <div id="top-bar">
   <span id="app-title">Reader</span>
-  <div id="mic-status">
-    <div id="mic-dot"></div>
-    <span id="mic-label">mic off</span>
-  </div>
 </div>
 
 <div id="bubble"></div>
@@ -150,13 +136,6 @@ html, body {
         <path d="M9 2h6l1.5 2.5H20a2 2 0 012 2v13a2 2 0 01-2 2H4a2 2 0 01-2-2V6.5a2 2 0 012-2h3.5L9 2z"/>
       </svg>
       Read
-    </button>
-    <button class="btn" id="btn-speak" onclick="toggleMic()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-        <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>
-        <path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/>
-      </svg>
-      Mic
     </button>
     <button class="btn" onclick="openDrawer()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
@@ -211,19 +190,15 @@ var toastTimer   = null;
 var video    = document.getElementById('video');
 var bubble   = document.getElementById('bubble');
 var modeLbl  = document.getElementById('mode-label');
-var micDot   = document.getElementById('mic-dot');
-var micLbl   = document.getElementById('mic-label');
 var procText = document.getElementById('proc-text');
 var btnMulti = document.getElementById('btn-multi');
-var btnSpeak = document.getElementById('btn-speak');
 
 document.getElementById('splash-btn').addEventListener('click', startApp);
 
 function startApp() {
-  // Request mic permission first (separate getUserMedia triggers Android permission dialog)
   navigator.mediaDevices.getUserMedia({ video: false, audio: true })
     .then(function(s) { s.getTracks().forEach(function(t){t.stop();}); })
-    .catch(function(){}) // mic denied is ok, continue
+    .catch(function(){})
     .then(function() {
       return navigator.mediaDevices.getUserMedia({
         video: { facingMode: { exact: 'environment' }, width:{ideal:3840}, height:{ideal:2160} },
@@ -288,10 +263,10 @@ function startListening() {
   if (recog) { try { recog.abort(); } catch(e){} }
   recog = new SR();
   recog.continuous=true; recog.interimResults=false; recog.lang='en-US';
-  recog.onstart  = function() { isListening=true;  micDot.className='on';  micLbl.textContent='listening'; btnSpeak.classList.add('on'); };
-  recog.onend    = function() { isListening=false; micDot.className='off'; micLbl.textContent='mic off';   btnSpeak.classList.remove('on'); if(!isProcessing) setTimeout(startListening,800); };
+  recog.onstart  = function() { isListening=true; };
+  recog.onend    = function() { isListening=false; if(!isProcessing) setTimeout(startListening,800); };
   recog.onerror  = function(e) {
-    isListening=false; micDot.className='off'; micLbl.textContent='mic off'; btnSpeak.classList.remove('on');
+    isListening=false;
     if (e.error==='not-allowed') { showToast('Mic blocked — check Chrome permissions'); return; }
     if (e.error!=='no-speech')   { setTimeout(startListening,1200); }
   };
@@ -300,11 +275,6 @@ function startListening() {
     if (last.isFinal) handleCommand(last[0].transcript.trim().toLowerCase());
   };
   try { recog.start(); } catch(e) { setTimeout(startListening,1000); }
-}
-
-function toggleMic() {
-  if (isListening) { try{recog.abort();}catch(e){} isListening=false; micDot.className='off'; micLbl.textContent='mic off'; btnSpeak.classList.remove('on'); }
-  else             { startListening(); }
 }
 
 // COMMANDS
@@ -356,7 +326,7 @@ function ocrWithClaude(b64, pageNum) {
     +'{"text":"complete word-for-word transcription","overview":"one natural spoken sentence with document type and date if visible","summary":"1 to 3 spoken sentences on key facts — amounts due, actions needed — spell out all numbers and dates as words"}';
   return fetch(WORKER_URL, {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({ model:'claude-opus-4-5', max_tokens:2500,
+    body:JSON.stringify({ model:'claude-opus-4-6', max_tokens:2500,
       messages:[{role:'user',content:[
         {type:'image',source:{type:'base64',media_type:'image/jpeg',data:b64}},
         {type:'text',text:prompt}
@@ -388,7 +358,7 @@ function askQuestion(q) {
   isProcessing=true; showBubble('Thinking...'); showProc('Thinking...');
   convHistory.push({role:'user',content:q});
   fetch(WORKER_URL, {method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-opus-4-5',max_tokens:512,
+    body:JSON.stringify({model:'claude-opus-4-6',max_tokens:512,
       system:'You are a reading assistant for someone with limited vision. Answer in 1 to 3 short natural spoken sentences. No markdown. Spell out all dollar amounts, phone numbers, and dates as words. If the answer is not in the document say so.',
       messages:convHistory.slice(-8)
     })
