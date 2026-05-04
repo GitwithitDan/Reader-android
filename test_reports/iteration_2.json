@@ -1,0 +1,56 @@
+{
+  "summary": "Iteration 2 — Backend-only retest. All 9 prior tests plus 4 new tests for GET /api/library pass (13/13). The /api/library aggregation endpoint correctly groups pages by session_id, orders newest-first by created_at, picks doc_type/summary/preview from the first page (page_num ascending), truncates text preview to 160 chars, excludes MongoDB _id, and reflects DELETE /api/pages/{sid} removals. Legacy endpoints (GET /, POST /analyze good+poor, POST /chat with+without pages, GET/DELETE /api/pages/{sid}) still green.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/library",
+        "issue": "Endpoint caps output at 100 documents but returns no total-count / pagination metadata. If a power user exceeds 100 captured sessions, the library appears to silently plateau. Consider adding a total field or skip/limit query params."
+      },
+      {
+        "endpoint": "GET /api/library",
+        "issue": "Aggregation uses $first after $sort:{page_num:1}, which works, but $first on created_at via $min is also used — mixing semantics. This is fine for valid data but if page_num is ever missing for a page, the 'first page' chosen for doc_type/summary/preview may not be deterministic. Consider falling back to $min:created_at to pick the first page."
+      },
+      {
+        "endpoint": "GET /api/library",
+        "issue": "Preview truncation is a hard slice (text_preview[:160]) with no ellipsis or word-boundary awareness; acceptable for a11y TTS but may cut mid-word. Minor UX nit only."
+      },
+      {
+        "endpoint": "POST /api/analyze (carried over from iteration_1)",
+        "issue": "LlmChat construction still happens before the try/except block; any builder-time error still becomes a bare 500 rather than a logged 502. Non-JSON LLM fallback still persists un-validated raw output as a page. Logger is still defined at module bottom. These were flagged in iteration_1 and remain unaddressed."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/test_reader_api.py",
+    "/app/backend/tests/test_library_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Add pagination / total-count to GET /api/library so clients can detect the 100-doc ceiling.",
+    "(Optional) Harden /api/library by using $min:created_at (or a $sort on created_at) when picking the 'first' page fields so it stays deterministic even if page_num is ever missing.",
+    "(Carryover from iteration_1) Move LlmChat construction inside try/except in /api/analyze and /api/chat, reconsider the silent non-JSON fallback, and move logger setup above route handlers."
+  ],
+  "critical_code_review_comments": [
+    "server.py line 217-245: /api/library aggregation is clean and correct. Explicitly excludes _id from output by rebuilding dicts. Good.",
+    "server.py line 242: `(doc.get('text_preview', '') or '')[:160]` — robust to null/missing text, verified by unit test.",
+    "server.py line 233: {'$limit': 100} is hard-coded with no override / no pagination metadata — see minor issue above.",
+    "Carry-over from iteration_1: .with_params(max_tokens=...) fix still in place (lines 119, 188)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_library_api.py (NEW — 4 pytest cases for GET /api/library: empty, grouping+ordering+preview-length+no-_id, delete-reflection, 160-char truncation)"
+  ],
+  "success_rate": {"backend": "100% (13/13)", "frontend": "not tested (out of scope per review request)"},
+  "seed_data_creation": "Library tests wipe the `pages` collection then insert synthetic docs with session_id prefix 'LIBTEST_' via pymongo (Mongo URL/DB taken from /app/backend/.env). Each test cleans up its LIBTEST_ documents via a fixture teardown. Reader-API tests continue to use real Claude calls with PIL-generated images (National Grid bill JPEG + heavy gaussian-blur JPEG) per /app/image_testing.md.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run the full regression with: `pytest /app/backend/tests/ -v --tb=short`. Library tests are in test_library_api.py and DO NOT hit Claude — they seed the pages collection directly with pymongo, call GET /api/library via HTTP, then tear down. Each library test begins by deleting ALL docs in the `pages` collection (acceptable because backend/.env points at the dev/test DB named 'test_database'). The two tests that DO call Claude (test_analyze_good_image_* + test_analyze_blurry_image via the good_analyze_result fixture) add ~13s total runtime. Backend base URL is read from frontend/.env key EXPO_PUBLIC_BACKEND_URL.",
+  "rca_of_issue": "No new bugs found this iteration. /api/library behaves exactly as specified: correct shape, correct ordering (newest created_at first), correct first-page selection for doc_type/summary/preview, correct 160-char preview truncation, no _id leakage, and deletions propagate. Verified via 4 dedicated pytest cases plus full 9-test regression of prior endpoints."
+}

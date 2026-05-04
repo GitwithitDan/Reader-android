@@ -214,6 +214,37 @@ async def clear_pages(session_id: str):
     return {"deleted": res.deleted_count}
 
 
+@api_router.get("/library")
+async def list_library():
+    """Return all captured sessions grouped as documents, newest first."""
+    pipeline = [
+        {"$sort": {"page_num": 1}},
+        {
+            "$group": {
+                "_id": "$session_id",
+                "pages": {"$sum": 1},
+                "doc_type": {"$first": "$doc_type"},
+                "summary": {"$first": "$summary"},
+                "text_preview": {"$first": "$text"},
+                "created_at": {"$min": "$created_at"},
+            }
+        },
+        {"$sort": {"created_at": -1}},
+        {"$limit": 100},
+    ]
+    out = []
+    async for doc in db.pages.aggregate(pipeline):
+        out.append({
+            "session_id": doc["_id"],
+            "pages": doc["pages"],
+            "doc_type": doc.get("doc_type", "Document"),
+            "summary": doc.get("summary", ""),
+            "preview": (doc.get("text_preview", "") or "")[:160],
+            "created_at": doc.get("created_at", ""),
+        })
+    return {"documents": out}
+
+
 # Include router
 app.include_router(api_router)
 

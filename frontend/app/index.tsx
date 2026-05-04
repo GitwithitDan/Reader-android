@@ -47,6 +47,55 @@ function makeSessionId() {
   return `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function formatDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    if (sameDay) {
+      return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    }
+    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
+
+function parseParagraphs(text: string): string[] {
+  return text
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 18);
+}
+
+function parseSections(text: string): string[] {
+  const lines = text.split("\n");
+  const sects: string[] = [];
+  let buf: string[] = [];
+  for (const ln of lines) {
+    const t = ln.trim();
+    const isHead =
+      t.length > 0 &&
+      t.length < 70 &&
+      (t === t.toUpperCase() || /^#{1,3}\s/.test(t));
+    if (isHead && buf.length > 0) {
+      sects.push(buf.join("\n").trim());
+      buf = [t];
+    } else {
+      buf.push(t);
+    }
+  }
+  if (buf.length > 0) sects.push(buf.join("\n").trim());
+  if (sects.length <= 1) {
+    const ps = parseParagraphs(text);
+    const out: string[] = [];
+    for (let i = 0; i < ps.length; i += 4) out.push(ps.slice(i, i + 4).join("\n\n"));
+    return out.length ? out : [text];
+  }
+  return sects.filter((s) => s.length > 8);
+}
+
 export default function ReaderApp() {
   const insets = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
@@ -60,6 +109,11 @@ export default function ReaderApp() {
   const [sessionId] = useState(makeSessionId);
   const [pages, setPages] = useState<Page[]>([]);
   const [multiMode, setMultiMode] = useState(false);
+  const [navIdx, setNavIdx] = useState({ page: 0, para: 0, sect: 0 });
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryItems, setLibraryItems] = useState<any[]>([]);
+  const [wakeEnabled, setWakeEnabled] = useState(false);
+  const wakeUntilRef = useRef(0); // timestamp until which wake is active
 
   const [processing, setProcessing] = useState(false);
   const [procText, setProcText] = useState("Reading…");
@@ -468,7 +522,115 @@ export default function ReaderApp() {
     speak(text);
   };
 
+  // ── Paragraph / section / page nav ──────────────────────────
+  const navPara = (dir: number) => {
+    if (!pages.length) { speak("No document captured yet."); return; }
+    let { page, para } = navIdx;
+    const currentParas = parseParagraphs(pages[page].text);
+    para += dir;
+    if (para < 0) {
+      if (page > 0) {
+        page--;
+        const prev = parseParagraphs(pages[page].text);
+        para = Math.max(0, prev.length - 1);
+      } else {
+        para = 0;
+        speak("That's the beginning.");
+        return;
+      }
+    } else if (para >= currentParas.length) {
+      if (page < pages.length - 1) {
+        page++;
+        para = 0;
+      } else {
+        para = Math.max(0, currentParas.length - 1);
+        speak("That's the end.");
+        return;
+      }
+    }
+    const paras = parseParagraphs(pages[page].text);
+    setNavIdx({ page, para, sect: 0 });
+    const text = paras[para] || pages[page].text;
+    presentSummary(`Page ${page + 1} · ¶ ${para + 1}`, text);
+    speak(text);
+  };
+
+  const navSection = (dir: number) => {
+    if (!pages.length) { speak("No document captured yet."); return; }
+    let { page, sect } = navIdx;
+    const sects = parseSections(pages[page].text);
+    sect += dir;
+    if (sect < 0) { sect = 0; speak("That's the first section."); return; }
+    if (sect >= sects.length) {
+      sect = sects.length - 1;
+      speak("That's the last section.");
+      return;
+    }
+    setNavIdx({ page, para: 0, sect });
+    const text = sects[sect];
+    presentSummary(`Page ${page + 1} · § ${sect + 1}`, text);
+    speak(text);
+  };
+
+  const navPage = (dir: number) => {
+    if (!pages.length) { speak("No document captured yet."); return; }
+    let page = navIdx.page + dir;
+    if (page < 0) { speak("That's the first page."); return; }
+    if (page >= pages.length) { speak("That's the last page."); return; }
+    setNavIdx({ page, para: 0, sect: 0 });
+    presentSummary(pages[page].doc_type, pages[page].summary);
+    speak(`Page ${page + 1}. ${pages[page].summary}`);
+  };
+
+  // ── Library (history of captured sessions) ──────────────────
+  const fetchLibrary = async () => {
+    try {
+      const res = await fetch(`${BACKEND}/api/library`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setLibraryItems(data.documents || []);
+    } catch (e) {
+      showToast("Could not load library");
+    }
+  };
+
+  const loadLibraryItem = async (session_id: string) => {
+    try {
+      const res = await fetch(`${BACKEND}/api/pages/${session_id}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const loaded: Page[] = (data.pages || []).map((p: any) => ({
+        page_id: p.id,
+        page_num: p.page_num,
+        doc_type: p.doc_type,
+        text: p.text,
+        summary: p.summary,
+      }));
+      if (!loaded.length) { showToast("Empty document"); return; }
+      setPages(loaded);
+      setNavIdx({ page: 0, para: 0, sect: 0 });
+      setLibraryOpen(false);
+      presentSummary(loaded[0].doc_type, loaded[0].summary);
+      const text = loaded.length === 1
+        ? `Loaded. ${loaded[0].summary}`
+        : `Loaded ${loaded.length} pages. ${loaded[0].summary}`;
+      speak(text);
+    } catch (e) {
+      showToast("Could not load document");
+    }
+  };
+
+  const deleteLibraryItem = async (session_id: string) => {
+    try {
+      await fetch(`${BACKEND}/api/pages/${session_id}`, { method: "DELETE" });
+      setLibraryItems((items) => items.filter((i) => i.session_id !== session_id));
+    } catch {}
+  };
+
   // ── Voice command router ────────────────────────────────────
+  const WAKE_WORD_RE = /\b(hey|ok|okay|hi|hello)\s+reader\b/i;
+  const WAKE_WINDOW_MS = 10_000;
+
   const handleVoice = (raw: string) => {
     const t = raw.toLowerCase().trim();
     if (!t) return;
@@ -476,60 +638,108 @@ export default function ReaderApp() {
     // Any speech interrupts ongoing TTS (barge-in)
     if (speakingRef.current) stopSpeak();
 
+    // Wake word handling: if wake mode enabled, only process if wake heard
+    // (or if we're within a wake window from a prior wake)
+    let stripped = t;
+    if (wakeEnabled) {
+      const hasWake = WAKE_WORD_RE.test(t);
+      const withinWindow = Date.now() < wakeUntilRef.current;
+      if (hasWake) {
+        stripped = t.replace(WAKE_WORD_RE, "").trim();
+        wakeUntilRef.current = Date.now() + WAKE_WINDOW_MS;
+        if (!stripped) {
+          speak("Yes?");
+          return;
+        }
+      } else if (!withinWindow) {
+        // Ignore — not addressed to Reader
+        return;
+      } else {
+        // Refresh wake window since the user is still talking to us
+        wakeUntilRef.current = Date.now() + WAKE_WINDOW_MS;
+      }
+    }
+
+    // Wake/sleep meta-commands (work regardless of wake mode)
+    if (/\b(go to sleep|sleep mode|stop listening|pause listening|be quiet|silent mode)\b/.test(t)) {
+      setWakeEnabled(true);
+      wakeUntilRef.current = 0;
+      speak('Sleep mode on. Say "hey reader" to wake me.');
+      return;
+    }
+    if (wakeEnabled && /\b(wake up|start listening|resume listening|listen (to me )?again|i'?m back)\b/.test(t)) {
+      setWakeEnabled(false);
+      wakeUntilRef.current = 0;
+      speak("I'm listening.");
+      return;
+    }
+
+    const cmd = stripped;
+
     // Capture
-    if (/\b(read|scan|capture|take)\b.*\b(this|it|document|page|picture|photo)\b/.test(t)
-        || /^(read|scan|capture|snap)$/.test(t)
-        || /\btake\s+(a\s+)?(picture|photo|snap)\b/.test(t)) {
+    if (/\b(read|scan|capture|take)\b.*\b(this|it|document|page|picture|photo)\b/.test(cmd)
+        || /^(read|scan|capture|snap)$/.test(cmd)
+        || /\btake\s+(a\s+)?(picture|photo|snap)\b/.test(cmd)) {
       capture();
       return;
     }
 
     // Multi-page: start
-    if (/\bmultiple\s+pages?\b|\bmulti.?page\b/.test(t)) {
+    if (/\bmultiple\s+pages?\b|\bmulti.?page\b/.test(cmd)) {
       if (!multiMode) toggleMulti();
       return;
     }
 
-    // Multi-page: next page
-    if (multiMode && /\bnext\b(?!\s+(section|paragraph))/.test(t)) {
-      capture();
-      return;
+    // Paragraph nav
+    if (/\b(next|forward)\s+paragraph\b/.test(cmd)) { navPara(1); return; }
+    if (/\b(previous|prev|back|last)\s+paragraph\b/.test(cmd)) { navPara(-1); return; }
+
+    // Section nav
+    if (/\b(next|forward)\s+section\b/.test(cmd)) { navSection(1); return; }
+    if (/\b(previous|prev|back|last)\s+section\b/.test(cmd)) { navSection(-1); return; }
+
+    // Page nav (on captured doc) vs multi-page capture
+    if (/\b(next|forward)\s+page\b/.test(cmd)) {
+      if (multiMode) { capture(); return; }
+      navPage(1); return;
     }
+    if (/\b(previous|prev|back|last)\s+page\b/.test(cmd)) { navPage(-1); return; }
+
+    // Multi-page: plain "next" during capture mode = capture next
+    if (multiMode && /^(next|okay next|ready)$/.test(cmd)) { capture(); return; }
 
     // Multi-page: done
-    if (multiMode && /\b(done|finish|finished|that'?s all|all done|stop capturing)\b/.test(t)) {
-      toggleMulti();
-      return;
+    if (multiMode && /\b(done|finish|finished|that'?s all|all done|stop capturing)\b/.test(cmd)) {
+      toggleMulti(); return;
     }
 
     // Summarize
-    if (/\b(summarize|summary|overview|recap|brief)\b/.test(t)) {
-      summarizeAll();
-      return;
-    }
+    if (/\b(summarize|summary|overview|recap|brief)\b/.test(cmd)) { summarizeAll(); return; }
 
     // Read full
-    if (/\b(read (it|the (whole|full|entire) (document|thing|text)|aloud|all of it|everything))\b/.test(t)
-        || /\bread (it|them) (to me|out loud|aloud)\b/.test(t)
-        || /^read (the )?(full|whole|entire)/.test(t)) {
-      readFull();
-      return;
+    if (/\b(read (it|the (whole|full|entire) (document|thing|text)|aloud|all of it|everything))\b/.test(cmd)
+        || /\bread (it|them) (to me|out loud|aloud)\b/.test(cmd)
+        || /^read (the )?(full|whole|entire)/.test(cmd)) {
+      readFull(); return;
     }
 
     // Repeat
-    if (/\b(repeat|say (that|it) again|what did you say|once more|again please)\b/.test(t)) {
-      repeatLast();
-      return;
+    if (/\b(repeat|say (that|it) again|what did you say|once more|again please)\b/.test(cmd)) {
+      repeatLast(); return;
     }
 
     // Stop / cancel
-    if (/^(stop|cancel|quiet|shush|silence|pause)\b/.test(t)) {
-      stopSpeak();
+    if (/^(stop|cancel|quiet|shush|silence|pause)\b/.test(cmd)) { stopSpeak(); return; }
+
+    // Library
+    if (/\b(library|history|saved|my documents|show (my )?library)\b/.test(cmd)) {
+      fetchLibrary();
+      setLibraryOpen(true);
       return;
     }
 
     // Show doc
-    if (/\b(show (me )?(the )?(document|doc|text)|open (the )?document|view (the )?document)\b/.test(t)) {
+    if (/\b(show (me )?(the )?(document|doc|text)|open (the )?document|view (the )?document)\b/.test(cmd)) {
       if (!pages.length) { speak("No document captured yet."); return; }
       setDrawerPageIdx(0);
       setDrawerOpen(true);
@@ -537,19 +747,15 @@ export default function ReaderApp() {
     }
 
     // Clear
-    if (/\b(clear|reset|start over|new document|forget)\b/.test(t)) {
-      clearAll(true);
-      return;
-    }
+    if (/\b(clear|reset|start over|new document|forget)\b/.test(cmd)) { clearAll(true); return; }
 
     // Help
-    if (/\b(help|how do i|instructions|what can (you|i) do|commands)\b/.test(t)) {
-      setHelpOpen(true);
-      return;
+    if (/\b(help|how do i|instructions|what can (you|i) do|commands)\b/.test(cmd)) {
+      setHelpOpen(true); return;
     }
 
     // Otherwise: if we have a document, treat as question
-    if (pages.length > 0 && t.length > 3) {
+    if (pages.length > 0 && cmd.length > 3) {
       askQuestionText(raw);
     }
   };
@@ -646,6 +852,8 @@ export default function ReaderApp() {
             ? "Speaking…"
             : partialText
             ? `"${partialText}"`
+            : wakeEnabled
+            ? 'Say "hey reader"'
             : listening
             ? "Listening…"
             : mode}
@@ -816,6 +1024,11 @@ export default function ReaderApp() {
         <QuickBtn label="Ask" onPress={() => setAskOpen((o) => !o)} testID="ask-toggle" disabled={!pages.length} />
         <QuickBtn label="Summary" onPress={summarizeAll} testID="summary-action" disabled={!pages.length} />
         <QuickBtn label="Read" onPress={readFull} testID="read-full" disabled={!pages.length} />
+        <QuickBtn
+          label="Library"
+          onPress={() => { fetchLibrary(); setLibraryOpen(true); }}
+          testID="library-btn"
+        />
         <QuickBtn label="Stop" onPress={stopSpeak} testID="stop-speak" disabled={!speaking} />
         <QuickBtn label="Clear" onPress={() => clearAll(true)} testID="clear-btn" disabled={!pages.length} />
       </View>
@@ -872,6 +1085,55 @@ export default function ReaderApp() {
 
       {/* Help overlay */}
       <HelpOverlay visible={helpOpen} onClose={() => setHelpOpen(false)} />
+
+      {/* Library modal */}
+      <Modal
+        visible={libraryOpen}
+        animationType="slide"
+        onRequestClose={() => setLibraryOpen(false)}
+      >
+        <SafeAreaView style={styles.drawer}>
+          <View style={styles.drawerHeader}>
+            <Text style={styles.drawerTitle}>Library</Text>
+            <TouchableOpacity testID="library-close" onPress={() => setLibraryOpen(false)}>
+              <Text style={styles.drawerClose}>×</Text>
+            </TouchableOpacity>
+          </View>
+          {libraryItems.length === 0 ? (
+            <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 32 }}>
+              <Text style={{ color: C.dim, fontSize: 16, textAlign: "center", lineHeight: 24 }}>
+                No documents saved yet.{"\n"}Capture a page to start your library.
+              </Text>
+            </View>
+          ) : (
+            <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+              {libraryItems.map((item) => (
+                <View key={item.session_id} style={styles.libCard} testID={`library-item-${item.session_id}`}>
+                  <TouchableOpacity
+                    style={{ flex: 1 }}
+                    onPress={() => loadLibraryItem(item.session_id)}
+                  >
+                    <Text style={styles.libCardType}>{(item.doc_type || "Document").toUpperCase()}</Text>
+                    <Text style={styles.libCardSummary} numberOfLines={2}>
+                      {item.summary || item.preview || "No summary"}
+                    </Text>
+                    <Text style={styles.libCardMeta}>
+                      {item.pages} page{item.pages === 1 ? "" : "s"}
+                      {item.created_at ? " · " + formatDate(item.created_at) : ""}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.libDelete}
+                    onPress={() => deleteLibraryItem(item.session_id)}
+                  >
+                    <Text style={styles.libDeleteText}>×</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+          )}
+        </SafeAreaView>
+      </Modal>
     </View>
   );
 }
@@ -937,10 +1199,28 @@ function HelpOverlay({ visible, onClose }: { visible: boolean; onClose: () => vo
             • "Read this" / "Scan" / "Capture" — snap the document{"\n"}
             • "Summarize" / "Give me a summary" — brief overview{"\n"}
             • "Read it to me" / "Read the whole thing" — full text aloud{"\n"}
+            • "Next paragraph" / "Previous paragraph" — step through text{"\n"}
+            • "Next section" / "Previous section" — jump by heading{"\n"}
+            • "Next page" / "Previous page" — navigate multi-page docs{"\n"}
             • "Repeat" / "Say that again" — replay last response{"\n"}
             • "Stop" / "Cancel" — silence current speech{"\n"}
             • "Show document" — open full text drawer{"\n"}
+            • "Library" / "Show history" — open saved documents{"\n"}
             • "Clear" / "New document" — start fresh
+          </Text>
+
+          <Text style={styles.helpSection}>WAKE WORD (OPTIONAL)</Text>
+          <Text style={styles.helpBody}>
+            Say "go to sleep" or "sleep mode" to make Reader stop listening for commands.
+            While sleeping, it only reacts when you say "hey reader" first, e.g.
+            "Hey Reader, summarize." Say "wake up" (or tap the mic icon) to resume
+            always-on listening.
+          </Text>
+
+          <Text style={styles.helpSection}>LIBRARY</Text>
+          <Text style={styles.helpBody}>
+            Every document you capture is saved. Tap Library (or say "library") to
+            re-open, summarize, or delete a past document.
           </Text>
 
           <Text style={styles.helpSection}>MULTIPLE PAGES</Text>
@@ -1355,4 +1635,40 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   helpBody: { color: C.dim, fontSize: 15, lineHeight: 25 },
+
+  // Library
+  libCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(240,230,208,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(240,230,208,0.12)",
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 10,
+  },
+  libCardType: {
+    color: C.amber,
+    fontSize: 11,
+    letterSpacing: 1.2,
+    fontWeight: "700",
+    marginBottom: 4,
+  },
+  libCardSummary: {
+    color: C.cream,
+    fontSize: 16,
+    fontFamily: Platform.select({ ios: "Georgia", android: "serif" }),
+    lineHeight: 22,
+    marginBottom: 6,
+  },
+  libCardMeta: { color: C.dim, fontSize: 12 },
+  libDelete: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 8,
+  },
+  libDeleteText: { color: C.dim, fontSize: 22, lineHeight: 22 },
 });
