@@ -1,0 +1,149 @@
+{
+  "theme": "Dark",
+  "archetype": "Organic & Earthy",
+  "mood": "Serene, premium, focused, accessible",
+  "colors": {
+    "background": "#18140f",
+    "text_primary": "#f0e6d0",
+    "text_dim": "rgba(240, 230, 208, 0.45)",
+    "accent": "#c8781a",
+    "success": "#4ade80",
+    "error": "#ef4444",
+    "overlay": "rgba(24, 20, 15, 0.8)",
+    "border_subtle": "rgba(240, 230, 208, 0.1)"
+  },
+  "typography": {
+    "fonts": {
+      "heading": "Georgia, serif",
+      "body": "Georgia, serif",
+      "ui": "System, sans-serif"
+    },
+    "sizes": {
+      "splash_title": "80px",
+      "h1": "32px",
+      "h2": "24px",
+      "h3": "20px",
+      "body": "22px",
+      "ui_large": "18px",
+      "ui_base": "16px",
+      "ui_small": "14px"
+    },
+    "line_heights": {
+      "body": 1.55,
+      "heading": 1.1,
+      "ui": 1.0
+    }
+  },
+  "layout": {
+    "safe_area": true,
+    "spacing": {
+      "xs": "4px",
+      "sm": "8px",
+      "md": "16px",
+      "lg": "24px",
+      "xl": "32px",
+      "xxl": "48px"
+    },
+    "radii": {
+      "sm": "8px",
+      "md": "16px",
+      "lg": "24px",
+      "full": "9999px"
+    }
+  },
+  "motion": {
+    "durations": {
+      "fast": "200ms",
+      "normal": "300ms",
+      "slow": "500ms"
+    },
+    "easings": {
+      "default": "ease-in-out",
+      "spring": "spring"
+    },
+    "animations": {
+      "summary_box": "Slide up from bottom with spring physics",
+      "waveform": "Sine wave animation, pulsating heights based on TTS audio or simulated",
+      "capture_flash": "Opacity 0 to 1 to 0 over 300ms, white background",
+      "badges_toasts": "Fade in/out"
+    }
+  },
+  "components": {
+    "Splash": {
+      "description": "Initial loading screen.",
+      "layout": "Center aligned, dark background",
+      "elements": [
+        {"name": "Title", "font": "Georgia", "size": "80px", "color": "#f0e6d0"},
+        {"name": "Button", "text": "OPEN READER", "color": "#c8781a", "font": "System", "size": "18px", "tracking": "wider"}
+      ]
+    },
+    "CameraViewfinder": {
+      "description": "Full screen camera behind all UI.",
+      "elements": [
+        {"name": "Brackets", "description": "4 corner brackets, 40px length, 4px thickness, color text_dim, turning #4ade80 on success"}
+      ]
+    },
+    "TopStatusBar": {
+      "description": "Absolute top, within safe area.",
+      "layout": "Row, space-between, padding horizontally",
+      "elements": [
+        {"name": "MicDot", "size": "12px rounded-full", "colors": "pulse green when listening, amber when speaking"},
+        {"name": "ModeLabel", "font": "System 14px text_dim"},
+        {"name": "PageCounter", "font": "System 14px text_primary"}
+      ]
+    },
+    "BottomControls": {
+      "description": "Absolute bottom, within safe area.",
+      "layout": "Row, space-between, align center, padding horizontally 32px",
+      "elements": [
+        {"name": "MultiPageToggle", "icon": "layers", "color": "text_primary", "size": "48px touch target"},
+        {"name": "CaptureCircle", "size": "74px", "bg": "#f0e6d0", "border": "4px solid text_dim", "shape": "circle"},
+        {"name": "DocumentDrawerBtn", "icon": "file-text", "color": "text_primary", "size": "48px touch target"}
+      ]
+    },
+    "SummaryBox": {
+      "description": "Sliding panel from bottom.",
+      "style": "bg #18140f, top rounded 24px, subtle top border",
+      "elements": [
+        {"name": "Chevron", "icon": "chevron-down", "color": "text_dim"},
+        {"name": "DocTypeLabel", "font": "System 14px text_dim uppercase tracking-widest"},
+        {"name": "Content", "font": "Georgia 22px text_primary line-height 1.55"}
+      ]
+    },
+    "DocumentDrawerModal": {
+      "description": "Full screen modal with page pills.",
+      "style": "bg #18140f",
+      "elements": [
+        {"name": "PagePills", "style": "horizontal scroll, pill shape bg text_dim for inactive, bg accent for active"},
+        {"name": "ScrollableText", "font": "Georgia 22px text_primary line-height 1.55"}
+      ]
+    },
+    "HelpOverlay": {
+      "description": "Positioned bottom-right above controls.",
+      "style": "Small circle '?' icon, opens full screen instructions."
+    }
+  },
+  "media": {
+    "image_urls": []
+  },
+  "accessibility": {
+    "contrast": "Strict adherence to #f0e6d0 on #18140f for all readable text.",
+    "touch_targets": "Minimum 48x48 logical pixels for all interactive elements.",
+    "screen_reader": "Use accessibilityLabel, accessibilityHint, and accessibilityRole on all custom buttons. Announce state changes (e.g., 'Processing document', 'Speaking').",
+    "test_ids": "Apply testID (React Native equivalent of data-testid) to all interactive and key informational elements."
+  },
+  "instructions_to_main_agent": [
+    "Project is an Expo React Native app using expo-router.",
+    "All files should be in .js or .jsx.",
+    "Use StyleSheet or NativeWind/Tailwind for styling. NativeWind is preferred if Tailwind is used.",
+    "Use 'expo-camera' or 'react-native-vision-camera' for the camera feed.",
+    "Use React Native Reanimated for the waveform, sliding panel, and corner bracket success animations.",
+    "Use 'expo-speech' for TTS and a suitable audio/speech-to-text library for voice commands, or mock them seamlessly.",
+    "Ensure the camera is the absolute background (z-index 0) and UI elements overlay it.",
+    "Maintain the exact specified colors: bg #18140f, text #f0e6d0, accent #c8781a, dim rgba(240,230,208,0.45).",
+    "Use Georgia for reading text (Splash title, summary content, drawer content) and System Sans for UI labels.",
+    "Do not use HTML tags; use <View>, <Text>, <TouchableOpacity>, <Modal>, etc.",
+    "Implement testID='kebab-case-name' on all interactive elements.",
+    "Do not use generic placeholder images or text."
+  ]
+}
