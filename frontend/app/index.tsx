@@ -18,6 +18,10 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Speech from "expo-speech";
 import * as ImageManipulator from "expo-image-manipulator";
+import {
+  ExpoSpeechRecognitionModule,
+  useSpeechRecognitionEvent,
+} from "expo-speech-recognition";
 
 const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL;
 const C = {
@@ -70,11 +74,40 @@ export default function ReaderApp() {
 
   const flashAnim = useRef(new Animated.Value(0)).current;
   const cornerAnim = useRef(new Animated.Value(0)).current; // 0 white -> 1 green
+  const micPulseAnim = useRef(new Animated.Value(1)).current;
 
   const [askText, setAskText] = useState("");
   const [askOpen, setAskOpen] = useState(false);
 
   const [mode, setMode] = useState("Point at a document");
+  const [lastSpoken, setLastSpoken] = useState("");
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [listening, setListening] = useState(false);
+  const listeningRef = useRef(false);
+  const [partialText, setPartialText] = useState("");
+  const wasListeningBeforeSpeakRef = useRef(false);
+  const speakingRef = useRef(false);
+  const startRecognitionRef = useRef<() => void>(() => {});
+  const handleVoiceRef = useRef<(t: string) => void>(() => {});
+  const stateRef = useRef({ pages: 0, multi: false });
+  stateRef.current = { pages: pages.length, multi: multiMode };
+
+  // Mic pulse loop while listening
+  useEffect(() => {
+    if (!listening) {
+      micPulseAnim.stopAnimation();
+      micPulseAnim.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(micPulseAnim, { toValue: 1.5, duration: 700, useNativeDriver: true }),
+        Animated.timing(micPulseAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [listening]);
 
   // Permissions on first open
   useEffect(() => {
@@ -82,6 +115,87 @@ export default function ReaderApp() {
       requestPermission();
     }
   }, [opened]);
+
+  // ── Voice recognition (continuous) ──────────────────────────
+  const startRecognition = () => {
+    if (speakingRef.current) return;
+    try {
+      ExpoSpeechRecognitionModule.start({
+        lang: "en-US",
+        interimResults: true,
+        continuous: true,
+        maxAlternatives: 1,
+        requiresOnDeviceRecognition: false,
+        addsPunctuation: false,
+      });
+    } catch (e) {
+      console.warn("STT start failed", e);
+    }
+  };
+  const stopRecognition = () => {
+    try { ExpoSpeechRecognitionModule.stop(); } catch {}
+  };
+  startRecognitionRef.current = startRecognition;
+
+  // Auto-start when user opens and permission is granted
+  useEffect(() => {
+    if (!opened || !permission?.granted) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+        if (cancelled) return;
+        if (res.granted) {
+          setVoiceOn(true);
+          setTimeout(() => startRecognitionRef.current(), 500);
+          // Welcome prompt
+          setTimeout(() => {
+            speak(
+              "Reader is ready. Point your phone at a document and say read this, or tap the capture button."
+            );
+          }, 800);
+        } else {
+          showToast("Voice commands unavailable — tap to capture");
+          speak("Point your phone at a document and tap the capture button.");
+        }
+      } catch (e) {
+        console.warn("STT permission error", e);
+        speak("Point your phone at a document and tap the capture button.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+      stopRecognition();
+    };
+  }, [opened, permission?.granted]);
+
+  useSpeechRecognitionEvent("start", () => { setListening(true); listeningRef.current = true; });
+  useSpeechRecognitionEvent("end", () => {
+    setListening(false);
+    listeningRef.current = false;
+    setPartialText("");
+    // Auto-restart if voice mode on and not speaking
+    if (voiceOn && !speakingRef.current) {
+      setTimeout(() => {
+        if (voiceOn && !speakingRef.current) startRecognitionRef.current();
+      }, 350);
+    }
+  });
+  useSpeechRecognitionEvent("error", (e) => {
+    console.warn("STT error", e.error, e.message);
+    setListening(false);
+  });
+  useSpeechRecognitionEvent("result", (event) => {
+    const r = event.results?.[0];
+    if (!r) return;
+    const transcript = (r.transcript || "").trim();
+    if (event.isFinal) {
+      setPartialText("");
+      if (transcript.length > 1) handleVoiceRef.current(transcript);
+    } else {
+      setPartialText(transcript);
+    }
+  });
 
   // Toast helper
   const showToast = (msg: string, ms = 2000) => {
@@ -104,20 +218,50 @@ export default function ReaderApp() {
 
   // Speak helpers
   const speak = (text: string) => {
+    if (!text) return;
     Speech.stop();
     setSpeaking(true);
+    speakingRef.current = true;
+    setLastSpoken(text);
+    // Pause recognition while we speak so we don't hear ourselves
+    if (listeningRef.current) {
+      wasListeningBeforeSpeakRef.current = true;
+      try { ExpoSpeechRecognitionModule.stop(); } catch {}
+    }
     Speech.speak(text, {
       language: "en-US",
       rate: 0.96,
       pitch: 1.0,
-      onDone: () => setSpeaking(false),
-      onStopped: () => setSpeaking(false),
-      onError: () => setSpeaking(false),
+      onDone: () => {
+        setSpeaking(false);
+        speakingRef.current = false;
+        if (wasListeningBeforeSpeakRef.current && voiceOn) {
+          wasListeningBeforeSpeakRef.current = false;
+          setTimeout(() => startRecognitionRef.current(), 400);
+        }
+      },
+      onStopped: () => {
+        setSpeaking(false);
+        speakingRef.current = false;
+      },
+      onError: () => {
+        setSpeaking(false);
+        speakingRef.current = false;
+        if (wasListeningBeforeSpeakRef.current && voiceOn) {
+          wasListeningBeforeSpeakRef.current = false;
+          setTimeout(() => startRecognitionRef.current(), 400);
+        }
+      },
     });
   };
   const stopSpeak = () => {
     Speech.stop();
     setSpeaking(false);
+    speakingRef.current = false;
+  };
+  const repeatLast = () => {
+    if (lastSpoken) speak(lastSpoken);
+    else speak("Nothing to repeat yet.");
   };
 
   // Show summary box
@@ -267,8 +411,8 @@ export default function ReaderApp() {
   };
 
   // Q&A
-  const askQuestion = async () => {
-    const q = askText.trim();
+  const askQuestionText = async (question: string) => {
+    const q = question.trim();
     if (!q) return;
     if (!pages.length) {
       showToast("Capture a document first");
@@ -299,6 +443,7 @@ export default function ReaderApp() {
       speak("Something went wrong. Please try again.");
     }
   };
+  const askQuestion = () => askQuestionText(askText);
 
   // Read full
   const readFull = () => {
@@ -322,6 +467,93 @@ export default function ReaderApp() {
     presentSummary("Summary", text);
     speak(text);
   };
+
+  // ── Voice command router ────────────────────────────────────
+  const handleVoice = (raw: string) => {
+    const t = raw.toLowerCase().trim();
+    if (!t) return;
+
+    // Any speech interrupts ongoing TTS (barge-in)
+    if (speakingRef.current) stopSpeak();
+
+    // Capture
+    if (/\b(read|scan|capture|take)\b.*\b(this|it|document|page|picture|photo)\b/.test(t)
+        || /^(read|scan|capture|snap)$/.test(t)
+        || /\btake\s+(a\s+)?(picture|photo|snap)\b/.test(t)) {
+      capture();
+      return;
+    }
+
+    // Multi-page: start
+    if (/\bmultiple\s+pages?\b|\bmulti.?page\b/.test(t)) {
+      if (!multiMode) toggleMulti();
+      return;
+    }
+
+    // Multi-page: next page
+    if (multiMode && /\bnext\b(?!\s+(section|paragraph))/.test(t)) {
+      capture();
+      return;
+    }
+
+    // Multi-page: done
+    if (multiMode && /\b(done|finish|finished|that'?s all|all done|stop capturing)\b/.test(t)) {
+      toggleMulti();
+      return;
+    }
+
+    // Summarize
+    if (/\b(summarize|summary|overview|recap|brief)\b/.test(t)) {
+      summarizeAll();
+      return;
+    }
+
+    // Read full
+    if (/\b(read (it|the (whole|full|entire) (document|thing|text)|aloud|all of it|everything))\b/.test(t)
+        || /\bread (it|them) (to me|out loud|aloud)\b/.test(t)
+        || /^read (the )?(full|whole|entire)/.test(t)) {
+      readFull();
+      return;
+    }
+
+    // Repeat
+    if (/\b(repeat|say (that|it) again|what did you say|once more|again please)\b/.test(t)) {
+      repeatLast();
+      return;
+    }
+
+    // Stop / cancel
+    if (/^(stop|cancel|quiet|shush|silence|pause)\b/.test(t)) {
+      stopSpeak();
+      return;
+    }
+
+    // Show doc
+    if (/\b(show (me )?(the )?(document|doc|text)|open (the )?document|view (the )?document)\b/.test(t)) {
+      if (!pages.length) { speak("No document captured yet."); return; }
+      setDrawerPageIdx(0);
+      setDrawerOpen(true);
+      return;
+    }
+
+    // Clear
+    if (/\b(clear|reset|start over|new document|forget)\b/.test(t)) {
+      clearAll(true);
+      return;
+    }
+
+    // Help
+    if (/\b(help|how do i|instructions|what can (you|i) do|commands)\b/.test(t)) {
+      setHelpOpen(true);
+      return;
+    }
+
+    // Otherwise: if we have a document, treat as question
+    if (pages.length > 0 && t.length > 3) {
+      askQuestionText(raw);
+    }
+  };
+  handleVoiceRef.current = handleVoice;
 
   // ── RENDER ──────────────────────────────────────────────────
   if (!opened) {
@@ -393,20 +625,55 @@ export default function ReaderApp() {
 
       {/* Top bar */}
       <View style={[styles.topBar, { paddingTop: insets.top + 6 }]}>
-        <View
+        <Animated.View
           style={[
             styles.micDot,
-            { backgroundColor: speaking ? C.amber : C.green },
+            {
+              backgroundColor: speaking
+                ? C.amber
+                : listening
+                ? C.green
+                : voiceOn
+                ? "rgba(76,222,128,0.55)"
+                : "rgba(255,255,255,0.3)",
+              transform: [{ scale: listening ? micPulseAnim : 1 }],
+            },
           ]}
+          testID="mic-dot"
         />
         <Text style={styles.modeLabel} numberOfLines={1}>
-          {speaking ? "Speaking…" : mode}
+          {speaking
+            ? "Speaking…"
+            : partialText
+            ? `"${partialText}"`
+            : listening
+            ? "Listening…"
+            : mode}
         </Text>
         {pages.length > 0 && (
           <Text style={styles.pageCounter} testID="page-counter">
             {pages.length === 1 ? "1 pg" : `${pages.length} pgs`}
           </Text>
         )}
+        <TouchableOpacity
+          testID="voice-toggle"
+          onPress={() => {
+            if (voiceOn) {
+              setVoiceOn(false);
+              stopRecognition();
+              showToast("Voice off");
+            } else {
+              setVoiceOn(true);
+              setTimeout(() => startRecognitionRef.current(), 200);
+              showToast("Voice on");
+            }
+          }}
+          style={[styles.helpBtn, voiceOn && { borderColor: C.amber }]}
+        >
+          <Text style={[styles.helpBtnText, voiceOn && { color: C.amber }]}>
+            {voiceOn ? "🎤" : "✕"}
+          </Text>
+        </TouchableOpacity>
         <TouchableOpacity
           testID="help-btn-top"
           onPress={() => setHelpOpen(true)}
@@ -654,34 +921,40 @@ function HelpOverlay({ visible, onClose }: { visible: boolean; onClose: () => vo
 
           <Text style={styles.helpSection}>SCANNING</Text>
           <Text style={styles.helpBody}>
-            Point your phone at the document. Tap the white circle to capture. Reader will check
-            quality, transcribe the text, and read a brief overview aloud.
+            Point your phone at the document. Tap the white circle, or simply say "read this",
+            "scan", or "capture". Reader will check quality, transcribe the text, and read a
+            brief overview aloud.
           </Text>
 
           <Text style={styles.helpSection}>ASKING QUESTIONS</Text>
           <Text style={styles.helpBody}>
-            Tap Ask, type your question, then send. Reader answers aloud using the captured
-            document as context.
+            Just talk. Reader is always listening when the mic icon is on. Ask anything about
+            the document and it will answer aloud. Or tap Ask to type a question.
           </Text>
 
-          <Text style={styles.helpSection}>QUICK ACTIONS</Text>
+          <Text style={styles.helpSection}>VOICE COMMANDS</Text>
           <Text style={styles.helpBody}>
-            • Summary — speaks a brief overview{"\n"}
-            • Read — reads the full text aloud{"\n"}
-            • Stop — silences the current speech{"\n"}
-            • Clear — starts a new document
+            • "Read this" / "Scan" / "Capture" — snap the document{"\n"}
+            • "Summarize" / "Give me a summary" — brief overview{"\n"}
+            • "Read it to me" / "Read the whole thing" — full text aloud{"\n"}
+            • "Repeat" / "Say that again" — replay last response{"\n"}
+            • "Stop" / "Cancel" — silence current speech{"\n"}
+            • "Show document" — open full text drawer{"\n"}
+            • "Clear" / "New document" — start fresh
           </Text>
 
           <Text style={styles.helpSection}>MULTIPLE PAGES</Text>
           <Text style={styles.helpBody}>
-            Tap the grid icon to start multi-page mode. Capture each page in sequence, then tap
-            the grid icon again to finish. Reader treats them as one document.
+            Say "multiple pages" or tap the grid icon to begin multi-page mode. Capture each
+            page, then say "done" (or tap the grid again) to finish. Reader treats them as one
+            document.
           </Text>
 
           <Text style={styles.helpSection}>TIPS</Text>
           <Text style={styles.helpBody}>
-            Hold steady before capturing. Tap anywhere on the camera to silence Reader mid-sentence.
-            Open the document drawer (≡) to view full text by page.
+            Tap anywhere on the camera to silence Reader mid-sentence. The mic icon in the top
+            bar toggles voice off if you want silence. Voice recognition requires a custom dev
+            build of this app — it won't activate in the Expo Go preview.
           </Text>
         </ScrollView>
       </SafeAreaView>

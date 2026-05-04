@@ -38,6 +38,14 @@
         }
       ],
       [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow Reader to listen for voice commands",
+          "speechRecognitionPermission": "Allow Reader to recognize your voice commands",
+          "androidSpeechServicePackages": ["com.google.android.googlequicksearchbox"]
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",
